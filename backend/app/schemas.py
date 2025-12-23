@@ -60,6 +60,8 @@ class ContractResponse(BaseModel):
     signed_at: Optional[datetime]
     locked_by_id: Optional[int]
     locked_at: Optional[datetime]
+    sender_approved: int
+    recipient_approved: int
     sender: UserResponse
     recipient: UserResponse
     versions: list[ContractVersionResponse] = []

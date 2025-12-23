@@ -9,6 +9,8 @@ class ContractStatus(str, enum.Enum):
     SIGNED = "signed"
     EDITED = "edited"
     DENIED = "denied"
+    APPROVED = "approved"
+    COMPLETE = "complete"
 
 class User(Base):
     __tablename__ = "users"
@@ -42,6 +44,10 @@ class Contract(Base):
     # Locking fields
     locked_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     locked_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Approval tracking
+    sender_approved = Column(Integer, default=0, nullable=False)  # 0 = not approved, 1 = approved
+    recipient_approved = Column(Integer, default=0, nullable=False)  # 0 = not approved, 1 = approved
     
     # Relationships
     sender = relationship("User", foreign_keys=[sender_id], back_populates="sent_contracts")

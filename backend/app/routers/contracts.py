@@ -189,23 +189,39 @@ def sign_contract(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
+    """Sign a contract. Both parties must have approved before signing is allowed."""
     contract = db.query(models.Contract).filter(models.Contract.id == contract_id).first()
     if not contract:
         raise HTTPException(status_code=404, detail="Contract not found")
     
-    if contract.recipient_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Only the recipient can sign the contract")
-    
-    if contract.status == schemas.ContractStatus.SIGNED:
-        raise HTTPException(status_code=400, detail="Contract is already signed")
+    if contract.sender_id != current_user.id and contract.recipient_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to sign this contract")
     
     if contract.status == schemas.ContractStatus.DENIED:
         raise HTTPException(status_code=400, detail="Cannot sign a denied contract")
     
+    # Check if both parties have approved
+    if contract.sender_approved != 1 or contract.recipient_approved != 1:
+        raise HTTPException(
+            status_code=400, 
+            detail="Both parties must approve the contract before signing"
+        )
+    
+    # Allow both sender and recipient to sign
     contract.status = schemas.ContractStatus.SIGNED
     contract.signed_at = datetime.utcnow()
     contract.locked_by_id = None
     contract.locked_at = None
+    
+    # Create notification for the other user
+    other_user_id = contract.recipient_id if current_user.id == contract.sender_id else contract.sender_id
+    notification = models.Notification(
+        user_id=other_user_id,
+        contract_id=contract.id,
+        type="contract_signed",
+        message=f"Contract '{contract.title}' has been signed"
+    )
+    db.add(notification)
     
     db.commit()
     return {"message": "Contract signed successfully"}
@@ -216,19 +232,82 @@ def deny_contract(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
+    """Deny/cancel a contract. Can be done by either party at any stage (except if already signed)."""
     contract = db.query(models.Contract).filter(models.Contract.id == contract_id).first()
     if not contract:
         raise HTTPException(status_code=404, detail="Contract not found")
     
-    if contract.recipient_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Only the recipient can deny the contract")
+    if contract.sender_id != current_user.id and contract.recipient_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to deny this contract")
+    
+    if contract.status == schemas.ContractStatus.SIGNED:
+        raise HTTPException(status_code=400, detail="Cannot deny a signed contract")
     
     contract.status = schemas.ContractStatus.DENIED
     contract.locked_by_id = None
     contract.locked_at = None
+    # Reset approvals when denied
+    contract.sender_approved = 0
+    contract.recipient_approved = 0
+    
+    # Create notification for the other user
+    other_user_id = contract.recipient_id if current_user.id == contract.sender_id else contract.sender_id
+    notification = models.Notification(
+        user_id=other_user_id,
+        contract_id=contract.id,
+        type="contract_denied",
+        message=f"Contract '{contract.title}' has been denied/cancelled"
+    )
+    db.add(notification)
     
     db.commit()
     return {"message": "Contract denied successfully"}
+
+@router.post("/{contract_id}/approve")
+def approve_contract(
+    contract_id: int,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Approve a contract. When both sides approve, contract is marked as complete."""
+    contract = db.query(models.Contract).filter(models.Contract.id == contract_id).first()
+    if not contract:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    
+    if contract.sender_id != current_user.id and contract.recipient_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to approve this contract")
+    
+    if contract.status == schemas.ContractStatus.DENIED:
+        raise HTTPException(status_code=400, detail="Cannot approve a denied contract")
+    
+    if contract.status == schemas.ContractStatus.COMPLETE:
+        raise HTTPException(status_code=400, detail="Contract is already complete")
+    
+    # Set approval based on user role
+    if current_user.id == contract.sender_id:
+        contract.sender_approved = 1
+    else:
+        contract.recipient_approved = 1
+    
+    # Check if both sides have approved - mark as complete
+    if contract.sender_approved == 1 and contract.recipient_approved == 1:
+        contract.status = schemas.ContractStatus.COMPLETE
+    
+    db.commit()
+    
+    # Create notification for the other user
+    other_user_id = contract.recipient_id if current_user.id == contract.sender_id else contract.sender_id
+    notification = models.Notification(
+        user_id=other_user_id,
+        contract_id=contract.id,
+        type="contract_approved",
+        message=f"Contract '{contract.title}' has been approved" + 
+                (" - Contract is now complete!" if contract.status == schemas.ContractStatus.COMPLETE else "")
+    )
+    db.add(notification)
+    db.commit()
+    
+    return {"message": "Contract approved successfully"}
 
 @router.post("/{contract_id}/edit", response_model=schemas.ContractResponse)
 async def edit_contract(
@@ -291,6 +370,22 @@ async def edit_contract(
     # Unlock contract after editing (as requested)
     contract.locked_by_id = None
     contract.locked_at = None
+    
+    # Auto-approve the editor (they've reviewed/edited the contract)
+    if current_user.id == contract.sender_id:
+        contract.sender_approved = 1
+        # Reset recipient's approval since there are new changes to review
+        contract.recipient_approved = 0
+    else:
+        contract.recipient_approved = 1
+        # Reset sender's approval since there are new changes to review
+        contract.sender_approved = 0
+    
+    # Check if both sides have approved - mark as complete
+    if contract.sender_approved == 1 and contract.recipient_approved == 1:
+        contract.status = schemas.ContractStatus.COMPLETE
+    else:
+        contract.status = schemas.ContractStatus.EDITED
     
     # Create notification for the other user (sender or recipient)
     other_user_id = contract.recipient_id if current_user.id == contract.sender_id else contract.sender_id

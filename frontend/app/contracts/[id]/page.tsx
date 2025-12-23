@@ -14,6 +14,8 @@ interface Contract {
   signed_at: string | null;
   locked_by_id: number | null;
   locked_at: string | null;
+  sender_approved: number;
+  recipient_approved: number;
   sender: { id: number; username: string; full_name: string | null };
   recipient: { id: number; username: string; full_name: string | null };
   versions: Array<{
@@ -91,6 +93,18 @@ export default function ContractDetail() {
       await fetchContract();
     } catch (error: any) {
       alert(error.response?.data?.detail || 'Failed to deny contract');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleApprove = async () => {
+    setActionLoading(true);
+    try {
+      await api.post(`/api/contracts/${contractId}/approve`);
+      await fetchContract();
+    } catch (error: any) {
+      alert(error.response?.data?.detail || 'Failed to approve contract');
     } finally {
       setActionLoading(false);
     }
@@ -179,7 +193,12 @@ export default function ContractDetail() {
   const isSender = currentUser?.id === contract.sender.id;
   const isLocked = contract.locked_by_id !== null;
   const isLockedByMe = contract.locked_by_id === currentUser?.id;
-  const canEdit = (isRecipient || isSender) && contract.status !== 'signed' && contract.status !== 'denied';
+  const canEdit = (isRecipient || isSender) && contract.status !== 'signed' && contract.status !== 'denied' && contract.status !== 'complete';
+  const myApproval = isSender ? contract.sender_approved : contract.recipient_approved;
+  const otherApproval = isSender ? contract.recipient_approved : contract.sender_approved;
+  const canApprove = (isRecipient || isSender) && contract.status !== 'complete' && contract.status !== 'denied' && contract.status !== 'signed' && myApproval === 0;
+  const canSign = (isRecipient || isSender) && contract.status === 'complete';
+  const canDeny = (isRecipient || isSender) && contract.status !== 'signed' && contract.status !== 'denied';
 
   return (
     <div className="min-h-screen bg-gray-50 py-8">
@@ -188,10 +207,12 @@ export default function ContractDetail() {
           <div className="mb-6">
             <h1 className="text-3xl font-bold text-gray-900 mb-2">{contract.title}</h1>
             <p className="text-gray-600">File: {contract.file_name}</p>
-            <div className="mt-4 flex items-center space-x-4">
+            <div className="mt-4 flex items-center space-x-4 flex-wrap">
               <span
                 className={`px-3 py-1 rounded-full text-sm font-semibold ${
-                  contract.status === 'signed'
+                  contract.status === 'complete'
+                    ? 'bg-purple-100 text-purple-800'
+                    : contract.status === 'signed'
                     ? 'bg-green-100 text-green-800'
                     : contract.status === 'denied'
                     ? 'bg-red-100 text-red-800'
@@ -200,13 +221,21 @@ export default function ContractDetail() {
                     : 'bg-yellow-100 text-yellow-800'
                 }`}
               >
-                {contract.status}
+                {contract.status === 'complete' ? '✓ Complete' : contract.status}
               </span>
               {isLocked && (
                 <span className="px-3 py-1 rounded-full text-sm font-semibold bg-orange-100 text-orange-800">
                   🔒 {isLockedByMe ? 'Locked by you' : 'Locked by another user'}
                 </span>
               )}
+              <div className="flex items-center space-x-2">
+                <span className="text-sm text-gray-600">
+                  Sender: {contract.sender_approved ? '✓ Approved' : 'Pending'}
+                </span>
+                <span className="text-sm text-gray-600">
+                  Recipient: {contract.recipient_approved ? '✓ Approved' : 'Pending'}
+                </span>
+              </div>
             </div>
           </div>
 
@@ -272,23 +301,44 @@ export default function ContractDetail() {
                 </div>
               )}
 
-              {isRecipient && contract.status === 'pending' && (
-                <div className="flex space-x-4">
-                  <button
-                    onClick={handleSign}
-                    disabled={actionLoading || isLocked}
-                    className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Sign Contract
-                  </button>
-                  <button
-                    onClick={handleDeny}
-                    disabled={actionLoading || isLocked}
-                    className="bg-red-600 text-white px-4 py-2 rounded-md hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Deny Contract
-                  </button>
+              {/* Approve Button - shown when user hasn't approved yet and contract is not complete/denied/signed */}
+              {canApprove && (
+                <button
+                  onClick={handleApprove}
+                  disabled={actionLoading || isLocked}
+                  className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Approve Contract
+                </button>
+              )}
+
+              {/* Show approval status if user has already approved */}
+              {!canApprove && (isRecipient || isSender) && contract.status !== 'complete' && contract.status !== 'denied' && contract.status !== 'signed' && myApproval === 1 && (
+                <div className="bg-green-50 border border-green-200 text-green-800 px-4 py-2 rounded-md">
+                  ✓ You have approved this contract
                 </div>
+              )}
+
+              {/* Sign Button - shown when both parties have approved (status is complete) */}
+              {canSign && (
+                <button
+                  onClick={handleSign}
+                  disabled={actionLoading || isLocked}
+                  className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Sign Contract
+                </button>
+              )}
+
+              {/* Deny/Cancel Button - available at all stages except when signed */}
+              {canDeny && (
+                <button
+                  onClick={handleDeny}
+                  disabled={actionLoading || isLocked}
+                  className="bg-red-600 text-white px-4 py-2 rounded-md hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {contract.status === 'complete' ? 'Cancel Contract' : 'Deny Contract'}
+                </button>
               )}
             </div>
           ) : (
